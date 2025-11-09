@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useCallback } from "react";
 import ChatMessage from "./ChatMessage";
-import { fetchChatbotResponse } from "../services/chatbotAPI";
+import { fetchChatbotResponse, clearChatHistory, checkBackendHealth } from "../services/chatbotAPI";
 
 const Chatbot = () => {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [listening, setListening] = useState(false);
   const [speechSupported, setSpeechSupported] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [backendConnected, setBackendConnected] = useState(false);
+  const [isTyping, setIsTyping] = useState(false);
 
   // Initialize speech recognition and synthesis
   const recognition = useCallback(() => {
@@ -21,6 +24,24 @@ const Chatbot = () => {
     return null;
   }, []);
 
+  // Check backend connection on component mount
+  useEffect(() => {
+    const checkConnection = async () => {
+      try {
+        const isHealthy = await checkBackendHealth();
+        setBackendConnected(isHealthy);
+        if (!isHealthy) {
+          console.warn("Backend is not responding. Make sure the Flask server is running on port 5000.");
+        }
+      } catch (error) {
+        console.error("Failed to connect to backend:", error);
+        setBackendConnected(false);
+      }
+    };
+    
+    checkConnection();
+  }, []);
+
   useEffect(() => {
     // Check if speech features are supported
     const supported = 'speechSynthesis' in window &&
@@ -30,10 +51,15 @@ const Chatbot = () => {
 
   const speak = (text) => {
     if ('speechSynthesis' in window) {
+      // Stop any current speech
+      window.speechSynthesis.cancel();
+      
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = 'en-US';
-      utterance.rate = 1;
+      utterance.rate = 0.9;
       utterance.pitch = 1;
+      utterance.volume = 0.8;
+      
       window.speechSynthesis.speak(utterance);
     }
   };
@@ -61,6 +87,11 @@ const Chatbot = () => {
         recognitionInstance.onerror = (event) => {
           console.error('Speech recognition error:', event.error);
           setListening(false);
+          alert('Speech recognition error: ' + event.error);
+        };
+
+        recognitionInstance.onend = () => {
+          setListening(false);
         };
 
         recognitionInstance.start();
@@ -68,57 +99,138 @@ const Chatbot = () => {
     }
   };
 
+  const handleClearChat = async () => {
+    try {
+      await clearChatHistory();
+      setMessages([]);
+      // Stop any ongoing speech
+      window.speechSynthesis.cancel();
+    } catch (error) {
+      console.error("Error clearing chat:", error);
+      alert("Failed to clear chat history");
+    }
+  };
+
   const handleSend = async () => {
-    if (input.trim() === "") return;
+    if (input.trim() === "" || isLoading) return;
+    if (!backendConnected) {
+      alert("Cannot send message: Backend is not connected. Please check if the Flask server is running.");
+      return;
+    }
+
+    setIsLoading(true);
+    setIsTyping(true);
 
     try {
       const userMessage = { sender: "user", text: input };
       setMessages((prev) => [...prev, userMessage]);
+      setInput("");
 
+      console.log("Sending message to backend...");
       const botResponse = await fetchChatbotResponse(input);
-      
-      if (botResponse.error) {
-        throw new Error(botResponse.error);
-      }
+      setIsTyping(false);
 
       const botMessage = { sender: "bot", text: botResponse };
       setMessages((prev) => [...prev, botMessage]);
 
-      if (speechSupported) {
-        speak(botResponse);
-      } else {
-        console.log("Speech synthesis not supported in this browser");
-      }
-      setInput("");
+      // Speak the response after a short delay
+      setTimeout(() => {
+        if (speechSupported) {
+          speak(botResponse);
+        }
+      }, 500);
+
     } catch (error) {
+      setIsTyping(false);
       console.error("Error in chat:", error);
       const errorMessage = {
         sender: "bot",
-        text: "Failed to fetch response from OpenAI API. Please check your API key and internet connection."
+        text: `Sorry, I encountered an error: ${error.message}. Please try again or check your connection.`
       };
       setMessages((prev) => [...prev, errorMessage]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleKeyPress = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
     }
   };
 
   return (
     <div className="chatbot">
+      <div className="chatbot-header">
+        <h2>Fluent Flow Chatbot</h2>
+        <div className="status-indicators">
+          <span className={`status-dot ${backendConnected ? 'connected' : 'disconnected'}`}></span>
+          <span className="status-text">
+            {backendConnected ? 'Connected' : 'Disconnected'}
+          </span>
+          {messages.length > 0 && (
+            <button onClick={handleClearChat} className="clear-button" title="Clear chat history">
+              🗑️ Clear
+            </button>
+          )}
+        </div>
+      </div>
+      
       <div className="messages">
+        {messages.length === 0 && (
+          <div className="welcome-message">
+            <p>👋 Hello! I'm your AI speaking partner. You can:</p>
+            <ul>
+              <li>Type messages in the text box below</li>
+              <li>Click the microphone button to speak</li>
+              <li>I'll respond both in text and speech</li>
+            </ul>
+          </div>
+        )}
         {messages.map((msg, index) => (
           <ChatMessage key={index} message={msg} />
         ))}
+        {isTyping && (
+          <div className="typing-indicator">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+        )}
       </div>
+      
       <div className="input-container">
         <input
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Type a message..."
+          onKeyPress={handleKeyPress}
+          placeholder="Type a message or use the microphone..."
+          disabled={isLoading || !backendConnected}
         />
-        <button onClick={handleMicClick} disabled={!speechSupported}>
-          {listening ? 'Stop' : 'Mic'}
+        <button
+          onClick={handleMicClick}
+          disabled={!speechSupported || isLoading}
+          className={`mic-button ${listening ? 'listening' : ''}`}
+          title={speechSupported ? (listening ? 'Stop listening' : 'Start listening') : 'Speech not supported'}
+        >
+          {listening ? '🔴' : '🎤'}
         </button>
-        <button onClick={handleSend}>Send</button>
+        <button
+          onClick={handleSend}
+          disabled={isLoading || !input.trim() || !backendConnected}
+          className="send-button"
+        >
+          {isLoading ? '⏳' : '📤'} Send
+        </button>
       </div>
+      
+      {!backendConnected && (
+        <div className="connection-warning">
+          ⚠️ Backend server is not running. Please start the Flask server on port 5000.
+        </div>
+      )}
     </div>
   );
 };
