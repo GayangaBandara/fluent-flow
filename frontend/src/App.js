@@ -2,6 +2,8 @@ import React, { useState, useRef } from "react";
 
 function App() {
   const [transcript, setTranscript] = useState("");
+  const [correctedTranscript, setCorrectedTranscript] = useState("");
+  const [repeatPrompt, setRepeatPrompt] = useState("");
   const [reply, setReply] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [audioUrl, setAudioUrl] = useState(null);
@@ -83,18 +85,23 @@ function App() {
       }
       const j = await res.json();
       setTranscript(j.transcript || "");
+      setCorrectedTranscript(j.corrected_transcript || "");
+      setRepeatPrompt(j.repeat_prompt || "");
       setReply(j.reply || "");
-      
+
       // Update conversation history
       const newHistory = [...conversationHistory];
       if (j.transcript) {
         newHistory.push({ type: 'user', content: j.transcript });
       }
+      if (j.corrected_transcript && j.corrected_transcript !== j.transcript) {
+        newHistory.push({ type: 'correction', content: j.corrected_transcript });
+      }
       if (j.reply) {
         newHistory.push({ type: 'assistant', content: j.reply });
       }
       setConversationHistory(newHistory.slice(-10)); // Keep last 10 messages
-      
+
       if (j.audio_url) {
         setAudioUrl(`http://localhost:8000${j.audio_url}`);
       } else {
@@ -107,10 +114,12 @@ function App() {
   };
 
   const clearConversation = () => {
-    setConversationHistory([]);
-    setTranscript("");
-    setReply("");
-    setAudioUrl(null);
+  setConversationHistory([]);
+  setTranscript("");
+  setCorrectedTranscript("");
+  setRepeatPrompt("");
+  setReply("");
+  setAudioUrl(null);
   };
 
   return (
@@ -165,6 +174,36 @@ function App() {
             {transcript || <em style={{ color: '#6c757d' }}>No transcript yet...</em>}
           </div>
         </div>
+
+        {correctedTranscript && correctedTranscript !== transcript && (
+          <div style={{ marginTop: 15 }}>
+            <strong>Corrected Sentence:</strong>
+            <div style={{ 
+              marginTop: '8px', 
+              padding: '10px', 
+              backgroundColor: '#e8f5e9', 
+              borderRadius: '4px',
+              minHeight: '30px'
+            }}>
+              {correctedTranscript}
+            </div>
+          </div>
+        )}
+
+        {repeatPrompt && (
+          <div style={{ marginTop: 15 }}>
+            <strong>Repeat Prompt:</strong>
+            <div style={{ 
+              marginTop: '8px', 
+              padding: '10px', 
+              backgroundColor: '#fffde7', 
+              borderRadius: '4px',
+              minHeight: '30px'
+            }}>
+              {repeatPrompt}
+            </div>
+          </div>
+        )}
 
         <div style={{ marginTop: 15 }}>
           <strong>AI Tutor Response:</strong>

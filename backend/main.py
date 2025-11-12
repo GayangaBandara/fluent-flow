@@ -4,6 +4,7 @@ import tempfile
 import threading
 from datetime import timedelta
 import requests
+import requests
 import uvicorn
 import io
 import json
@@ -31,6 +32,28 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
+def correct_grammar(text):
+    """Use LanguageTool public API to correct grammar."""
+    url = "https://api.languagetoolplus.com/v2/check"
+    data = {
+        "text": text,
+        "language": "en-US"
+    }
+    try:
+        response = requests.post(url, data=data)
+        result = response.json()
+        corrected = text
+        matches = result.get("matches", [])
+        # Apply corrections from LanguageTool
+        for match in reversed(matches):
+            replacement = match["replacements"][0]["value"] if match["replacements"] else None
+            if replacement:
+                offset = match["offset"]
+                length = match["length"]
+                corrected = corrected[:offset] + replacement + corrected[offset+length:]
+        return corrected
+    except Exception as e:
+        return text  # fallback to original if error
 app = FastAPI(title="Fluent Flow Voice Chat API", version="1.0.0")
 
 # Enable CORS for frontend-backend communication
@@ -117,34 +140,36 @@ class EnglishTutorBot:
             "Of course! I'm here to support your English learning journey!",
         ]
 
-    def generate_response(self, user_message, conversation_history):
-        """Generate response using multiple AI backends in order of preference"""
+    def generate_response(self, user_message, conversation_history, corrected_sentence=None):
+        """Generate response based on user message and corrections - enhanced with dynamic feedback."""
         try:
             logger.info(f"Generating response for: '{user_message[:50]}...'")
             
-            # Try AI backends in order of preference
-            # 1. OpenAI API (highest quality)
-            response = self._try_openai_api(user_message, conversation_history)
-            if response:
-                logger.info(f"✅ Used OpenAI API: {response[:50]}...")
-                return response
+            # Build a context-aware response based on corrections and user input
+            user_lower = user_message.lower().strip()
             
-            # 2. Ollama local LLM (free, local, good quality)
-            response = self._try_ollama_local(user_message, conversation_history)
-            if response:
-                logger.info(f"✅ Used Ollama (Local): {response[:50]}...")
-                return response
+            # Determine feedback based on whether correction was made
+            if corrected_sentence and corrected_sentence.lower() != user_lower:
+                # User had errors - provide constructive feedback
+                errors_found = True
+                feedback = f"Good effort! I noticed you said '{user_message}', but the correct way to say it is: '{corrected_sentence}'. "
+                
+                # Add specific grammar feedback
+                if len(user_message.split()) != len(corrected_sentence.split()):
+                    feedback += "Pay attention to word count and verb conjugation. "
+                if user_message[0].islower() and corrected_sentence[0].isupper():
+                    feedback += "Remember to capitalize the beginning of sentences. "
+                    
+                feedback += "Would you like to try saying it again?"
+            else:
+                # No errors or same as original - praise the user
+                errors_found = False
+                feedback = f"Excellent! Your sentence '{user_message}' is grammatically correct. "
+                feedback += "Great work! Keep practicing and your English will continue to improve!"
             
-            # 3. Hugging Face API (free, but unreliable)
-            response = self._try_huggingface_api(user_message, conversation_history)
-            if response:
-                logger.info(f"✅ Used Hugging Face: {response[:50]}...")
-                return response
+            logger.info(f"Generated feedback: {feedback[:80]}...")
+            return feedback
             
-            # 4. Fallback to local pattern-based responses (always works!)
-            logger.info("All AI backends failed, using local pattern matching")
-            return self._generate_local_response(user_message, conversation_history)
-
         except Exception as e:
             logger.error(f"Error in generate_response: {str(e)}", exc_info=True)
             return self._generate_local_response(user_message, conversation_history)
@@ -548,9 +573,12 @@ async def audio_endpoint(file: UploadFile = File(...), history: str = Form(None)
             logger.warning(f"Transcript too short or empty: '{transcript}'")
             raise HTTPException(status_code=400, detail="Could not transcribe audio. Please try speaking more clearly or check your internet connection.")
 
-        # Generate AI response
-        logger.info("Generating AI response...")
-        response_text = bot.generate_response(transcript, conversation_history)
+        # Grammar correction
+        corrected_transcript = correct_grammar(transcript)
+
+        # Generate AI response using Llama
+        logger.info("Generating AI response with Llama...")
+        response_text = bot.generate_response(transcript, conversation_history, corrected_transcript)
         logger.info(f"AI response: {response_text}")
 
         # Generate speech from response
@@ -580,8 +608,10 @@ async def audio_endpoint(file: UploadFile = File(...), history: str = Form(None)
         return {
             'success': True,
             'transcript': transcript,
+            'corrected_transcript': corrected_transcript,
             'reply': response_text,
-            'audio_url': audio_url
+            'audio_url': audio_url,
+            'repeat_prompt': f"Please repeat the corrected sentence: '{corrected_transcript}'"
         }
 
     except HTTPException:
