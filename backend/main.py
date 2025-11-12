@@ -33,14 +33,14 @@ logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 def correct_grammar(text):
-    """Use LanguageTool public API to correct grammar."""
+    """Use LanguageTool public API to correct grammar with timeout."""
     url = "https://api.languagetoolplus.com/v2/check"
     data = {
         "text": text,
         "language": "en-US"
     }
     try:
-        response = requests.post(url, data=data)
+        response = requests.post(url, data=data, timeout=5)
         result = response.json()
         corrected = text
         matches = result.get("matches", [])
@@ -51,8 +51,13 @@ def correct_grammar(text):
                 offset = match["offset"]
                 length = match["length"]
                 corrected = corrected[:offset] + replacement + corrected[offset+length:]
+        logger.info(f"Grammar correction: '{text}' → '{corrected}'")
         return corrected
+    except requests.exceptions.Timeout:
+        logger.warning(f"LanguageTool API timeout, using original: {text}")
+        return text
     except Exception as e:
+        logger.warning(f"Grammar correction error: {str(e)}, using original: {text}")
         return text  # fallback to original if error
 app = FastAPI(title="Fluent Flow Voice Chat API", version="1.0.0")
 
@@ -574,12 +579,14 @@ async def audio_endpoint(file: UploadFile = File(...), history: str = Form(None)
             raise HTTPException(status_code=400, detail="Could not transcribe audio. Please try speaking more clearly or check your internet connection.")
 
         # Grammar correction
+        logger.info(f"Starting grammar correction for: '{transcript}'")
         corrected_transcript = correct_grammar(transcript)
+        logger.info(f"Grammar correction completed: '{corrected_transcript}'")
 
-        # Generate AI response using Llama
-        logger.info("Generating AI response with Llama...")
+        # Generate AI response
+        logger.info("Generating AI tutor response...")
         response_text = bot.generate_response(transcript, conversation_history, corrected_transcript)
-        logger.info(f"AI response: {response_text}")
+        logger.info(f"AI response generated: {response_text}")
 
         # Generate speech from response
         audio_path = bot.generate_speech(response_text)
